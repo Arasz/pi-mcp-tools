@@ -1,0 +1,49 @@
+{
+  "$schema": "./schemas/config.schema.json",
+  "frameworkVersion": "0.140.0",
+  "project": {
+    "name": "pi-mcp-tools",
+    "summary": "Universal MCP tools extension for the pi coding agent — connects to MCP servers and registers their tools for the LLM",
+    "domain": "Developer tooling: MCP server bridge for the pi coding agent"
+  },
+  "stacks": [
+    "github",
+    "node",
+    "ts"
+  ],
+  "agents": [
+    "claude",
+    "copilot",
+    "hermes"
+  ],
+  "sourceControl": {
+    "platform": "github",
+    "repoUrl": "https://github.com/Arasz/pi-mcp-tools",
+    "projectUrl": null
+  },
+  "commands": {
+    "build": "npm run build",
+    "test": "npm run test",
+    "lint": "npm run lint"
+  },
+  "personaRouting": [
+    {
+      "work": "MCP server integration and tool adapter development",
+      "agent": "architect"
+    },
+    {
+      "work": "TypeScript/pi extension API changes, test fixes",
+      "agent": "frontend-api-engineer"
+    }
+  ],
+  "skillScope": "default",
+  "include": {
+    "skills": [
+      "code-review-checklist",
+      "evidence-first-research",
+      "explore-codebase",
+      "review-changes",
+      "refactor-safely"
+    ]
+  }
+}

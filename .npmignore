@@ -1,5 +1,6 @@
 .github/
 .husky/
+.ai-badger/
 node_modules/
 *.log
 .DS_Store
