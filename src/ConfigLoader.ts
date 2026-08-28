@@ -9,7 +9,7 @@ export class ConfigLoader {
   /** Load MCP config from user-global settings.json only.
    *
    * Project-local .pi/settings.json is deliberately NOT checked first:
-   * headless pi at default trust ignores project-local extensions (F20-F22),
+   * headless pi at default trust ignores project-local extensions,
    * so preferring project config would silently load untrusted server config.
    * User scope is the only safe default.
    */
@@ -51,6 +51,7 @@ export class ConfigLoader {
 
   static saveDisabledTools(disabledTools: Set<string>): void {
     if (!existsSync(GLOBAL_SETTINGS_PATH)) {
+      console.error(`[pi-mcp-tools] Cannot save disabled tools: ${GLOBAL_SETTINGS_PATH} not found`);
       return;
     }
 

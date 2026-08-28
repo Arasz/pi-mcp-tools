@@ -1,9 +1,18 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { ConfigLoader } from "../src/ConfigLoader.js";
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { randomUUID } from "crypto";
+
+// ConfigLoader derives the global settings path from homedir() at import
+// time, so os.homedir is mocked before the module loads.
+const fakeHome = vi.hoisted(() => `/tmp/pi-mcp-tools-test-home-${process.pid}`);
+
+vi.mock("os", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("os")>();
+  return { ...actual, homedir: () => fakeHome };
+});
 
 // We test ConfigLoader's validation/enumeration logic directly.
 // File I/O tests use mock fs to avoid polluting the real ~/.pi/.
@@ -112,6 +121,21 @@ describe("ConfigLoader", () => {
         s1: { type: "local", command: ["node", "a.js"], enabled: false },
       });
       expect(result).toHaveLength(0);
+    });
+  });
+
+  describe("saveDisabledTools", () => {
+    it("warns when settings.json is missing instead of failing silently", () => {
+      rmSync(join(fakeHome, ".pi"), { recursive: true, force: true });
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      expect(() => ConfigLoader.saveDisabledTools(new Set(["mcp_x_y"]))).not.toThrow();
+      expect(consoleError).toHaveBeenCalledWith(
+        expect.stringContaining("Cannot save disabled tools"),
+      );
+      expect(consoleError.mock.calls[0][0]).toContain(".pi");
+
+      consoleError.mockRestore();
     });
   });
 });
