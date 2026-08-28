@@ -76,8 +76,30 @@ describe("McpToolAdapter", () => {
       const tool: McpTool = { name: "my_tool", inputSchema: {} };
       const piTool = McpToolAdapter.convertToPiTool(tool, serverName, () => mockClient);
       const result = await piTool!.execute("id", { key: "value" }, undefined, undefined, {} as any);
-      expect(mockClient.callTool).toHaveBeenCalledWith("my_tool", { key: "value" });
+      expect(mockClient.callTool).toHaveBeenCalledWith("my_tool", { key: "value" }, undefined);
       expect(result.isError).toBeFalsy();
+    });
+
+    it("forwards the abort signal to client.callTool", async () => {
+      const mockClient = createMockClient();
+      const tool: McpTool = { name: "my_tool", inputSchema: {} };
+      const piTool = McpToolAdapter.convertToPiTool(tool, serverName, () => mockClient);
+      const controller = new AbortController();
+      await piTool!.execute("id", {}, controller.signal, undefined, {} as any);
+      expect(mockClient.callTool).toHaveBeenCalledWith("my_tool", {}, controller.signal);
+    });
+
+    it("maps an aborted call to the cancelled result instead of an MCP error", async () => {
+      const mockClient = createMockClient();
+      const abortError = new Error("This operation was aborted");
+      abortError.name = "AbortError";
+      mockClient.callTool = vi.fn().mockRejectedValue(abortError);
+      const tool: McpTool = { name: "my_tool", inputSchema: {} };
+      const piTool = McpToolAdapter.convertToPiTool(tool, serverName, () => mockClient);
+      const result = await piTool!.execute("id", {}, undefined, undefined, {} as any);
+      expect(result.isError).toBeFalsy();
+      expect(result.content[0].text).toBe("Tool call cancelled");
+      expect((result.details as any).cancelled).toBe(true);
     });
 
     it("handles isError from MCP server", async () => {

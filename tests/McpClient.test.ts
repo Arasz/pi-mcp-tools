@@ -155,4 +155,20 @@ describe("McpClient", () => {
     expect(onDisconnected).toHaveBeenCalledTimes(1);
     expect(client.isConnected()).toBe(false);
   });
+
+  it("forwards an abort signal to the SDK callTool options", async () => {
+    const config = { type: "local" as const, command: ["node", "server.js"] };
+    const client = new McpClient(config);
+    await client.connect();
+    const sdkClient = sdk.clients[sdk.clients.length - 1];
+    const controller = new AbortController();
+
+    await client.callTool("test", { arg: 1 }, controller.signal);
+
+    expect(sdkClient.callTool).toHaveBeenCalledWith(
+      { name: "test", arguments: { arg: 1 } },
+      undefined,
+      { signal: controller.signal },
+    );
+  });
 });

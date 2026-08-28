@@ -62,7 +62,11 @@ export class McpToolAdapter {
             };
           }
 
-          const result = (await client.callTool(mcpTool.name, params as Record<string, unknown>)) as McpCallResult;
+          const result = (await client.callTool(
+            mcpTool.name,
+            params as Record<string, unknown>,
+            signal,
+          )) as McpCallResult;
 
           if (result.isError) {
             const errorText = extractErrorText(result);
@@ -80,6 +84,12 @@ export class McpToolAdapter {
             details: { server: serverName, tool: mcpTool.name } as TDetails,
           };
         } catch (error: unknown) {
+          if (signal?.aborted || isAbortError(error)) {
+            return {
+              content: [{ type: "text", text: "Tool call cancelled" } as TextContent],
+              details: { cancelled: true } as TDetails,
+            };
+          }
           const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
           return {
             content: [{ type: "text", text: `MCP Error: ${errorMessage}` } as TextContent],
@@ -90,6 +100,10 @@ export class McpToolAdapter {
       },
     };
   }
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
 }
 
 function extractErrorText(result: McpCallResult): string {

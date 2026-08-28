@@ -169,12 +169,12 @@ export class McpClient {
     return response.tools as any[];
   }
 
-  async callTool(name: string, args: Record<string, unknown>): Promise<unknown> {
+  async callTool(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
     if (!this.connected) {
       throw new Error("Client not connected");
     }
 
-    return await this.client.callTool({ name, arguments: args });
+    return await this.client.callTool({ name, arguments: args }, undefined, { signal });
   }
 
   async disconnect(): Promise<void> {
