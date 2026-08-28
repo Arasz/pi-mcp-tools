@@ -10,6 +10,7 @@ export class McpRegistry {
   private reconnectAttempts: Map<string, number> = new Map();
   private autoReconnect: boolean;
   private reconnectInterval: number;
+  private shuttingDown: boolean = false;
 
   constructor(
     serverConfigs: ReadonlyArray<{ readonly name: string; readonly config: McpServerConfig }>,
@@ -22,6 +23,7 @@ export class McpRegistry {
   }
 
   async initialize(): Promise<void> {
+    this.shuttingDown = false;
     const connectPromises = this.serverConfigs.map(async ({ name, config }) => {
       const client = new McpClient(config);
 
@@ -35,6 +37,7 @@ export class McpRegistry {
       try {
         await Promise.race([connectPromise, timeoutPromise]);
         this.clients.set(name, client);
+        this.watchClient(name, config, client);
       } catch {
         // Error captured by caller via getClients() missing this name
       } finally {
@@ -43,6 +46,10 @@ export class McpRegistry {
     });
 
     await Promise.allSettled(connectPromises);
+  }
+
+  private watchClient(name: string, config: McpServerConfig, client: McpClient): void {
+    client.onDisconnected = () => this.scheduleReconnect(name, config);
   }
 
   getClients(): Map<string, McpClient> {
@@ -54,6 +61,7 @@ export class McpRegistry {
   }
 
   async shutdown(): Promise<void> {
+    this.shuttingDown = true;
     for (const timer of this.reconnectTimers.values()) {
       clearTimeout(timer);
     }
@@ -84,7 +92,7 @@ export class McpRegistry {
   }
 
   private scheduleReconnect(name: string, config: McpServerConfig): void {
-    if (!this.autoReconnect) {
+    if (this.shuttingDown || !this.autoReconnect) {
       return;
     }
 
@@ -117,6 +125,7 @@ export class McpRegistry {
         const client = new McpClient(config);
         await client.connect();
         this.clients.set(name, client);
+        this.watchClient(name, config, client);
         this.reconnectAttempts.delete(name);
       } catch {
         this.scheduleReconnect(name, config);

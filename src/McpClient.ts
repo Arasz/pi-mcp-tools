@@ -18,6 +18,11 @@ export class McpClient {
   private config: McpServerConfig;
   private connected: boolean = false;
   private closed: boolean = false;
+  private intentionalClose: boolean = false;
+  private closeNotified: boolean = false;
+
+  /** Invoked once when the connection dies unexpectedly (not via disconnect()). */
+  onDisconnected?: (error?: Error) => void;
 
   constructor(config: McpServerConfig) {
     this.config = config;
@@ -32,6 +37,10 @@ export class McpClient {
     if (this.connected) {
       return;
     }
+
+    // Suppress close events while connecting: swapping out the previous
+    // client or closing failed attempts must not look like a lost connection.
+    this.intentionalClose = true;
 
     if (this.closed) {
       // A closed Client is never reused: reconnect always connects a fresh one.
@@ -51,6 +60,8 @@ export class McpClient {
       this.transport = null;
       throw error;
     }
+
+    this.armDisconnectWatch();
   }
 
   private async connectWithAutoDetect(): Promise<void> {
@@ -111,6 +122,23 @@ export class McpClient {
     throw new Error("All transport types failed");
   }
 
+  private armDisconnectWatch(): void {
+    this.intentionalClose = false;
+    this.closeNotified = false;
+    this.client.onclose = () => this.handleUnexpectedClose();
+    this.client.onerror = (error: Error) => this.handleUnexpectedClose(error);
+  }
+
+  private handleUnexpectedClose(error?: Error): void {
+    if (this.intentionalClose || this.closeNotified) {
+      return;
+    }
+    this.connected = false;
+    this.closed = true;
+    this.closeNotified = true;
+    this.onDisconnected?.(error);
+  }
+
   private createStdioTransport(): StdioClientTransport {
     if (this.config.type !== "local") {
       throw new Error("Expected local config for stdio transport");
@@ -154,6 +182,8 @@ export class McpClient {
       return;
     }
 
+    // Closing from our side must not surface as an unexpected disconnect.
+    this.intentionalClose = true;
     try {
       await this.client.close();
     } finally {
