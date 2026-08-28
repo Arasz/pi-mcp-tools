@@ -72,9 +72,11 @@ export class McpClient {
     const url = new URL(this.config.url);
     const headers = this.config.headers ? { ...this.config.headers } : undefined;
 
-    // Use explicit transport from config if specified
-    if (this.config.transport === "websocket" || url.protocol === "ws:" || url.protocol === "wss:") {
-      this.transport = new WebSocketClientTransport(url);
+    // An explicit transport is honored as-is; auto-detect only runs when
+    // the config leaves transport unset (ws/wss URLs still imply websocket).
+    const explicit = this.createExplicitTransport(url, headers);
+    if (explicit) {
+      this.transport = explicit;
       await this.client.connect(this.transport);
       this.connected = true;
       return;
@@ -120,6 +122,27 @@ export class McpClient {
     }
 
     throw new Error("All transport types failed");
+  }
+
+  private createExplicitTransport(
+    url: URL,
+    headers?: Record<string, string>,
+  ): StreamableHTTPClientTransport | SSEClientTransport | WebSocketClientTransport | null {
+    if (this.config.type !== "remote") {
+      return null;
+    }
+
+    const httpOptions = { requestInit: headers ? { headers } : undefined };
+    switch (this.config.transport) {
+      case "websocket":
+        return new WebSocketClientTransport(url);
+      case "sse":
+        return new SSEClientTransport(url, httpOptions);
+      case "streamable-http":
+        return new StreamableHTTPClientTransport(url, httpOptions);
+      default:
+        return url.protocol === "ws:" || url.protocol === "wss:" ? new WebSocketClientTransport(url) : null;
+    }
   }
 
   private armDisconnectWatch(): void {

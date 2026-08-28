@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { enabledToolNames } from "../src/toolFilter.js";
+import { countEnabledTools, enabledToolNames } from "../src/toolFilter.js";
 
 describe("enabledToolNames", () => {
   it("removes a disabled tool with a non-mcp_ prefix", () => {
@@ -21,5 +21,24 @@ describe("enabledToolNames", () => {
     const disabled = new Set(["mcp_fs_write"]);
     const result = enabledToolNames(["mcp_fs_read", "mcp_fs_write"], registered, disabled);
     expect(result).toEqual(["mcp_fs_read"]);
+  });
+});
+
+describe("countEnabledTools", () => {
+  it("counts registered tools that are not disabled", () => {
+    const registered = new Set(["a", "b", "c"]);
+    const disabled = new Set(["c", "d", "e"]);
+    expect(countEnabledTools(registered, disabled)).toBe(2);
+  });
+
+  it("never goes negative", () => {
+    const registered = new Set(["a"]);
+    const disabled = new Set(["a", "b", "c"]);
+    expect(countEnabledTools(registered, disabled)).toBe(0);
+  });
+
+  it("counts everything when nothing is disabled", () => {
+    const registered = new Set(["a", "b"]);
+    expect(countEnabledTools(registered, new Set())).toBe(2);
   });
 });

@@ -2,7 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { McpRegistry } from "./McpRegistry.js";
 import { McpToolAdapter } from "./McpToolAdapter.js";
 import { ConfigLoader } from "./ConfigLoader.js";
-import { enabledToolNames } from "./toolFilter.js";
+import { countEnabledTools, enabledToolNames } from "./toolFilter.js";
 import type { McpConfig } from "./types.js";
 import { Type } from "@sinclair/typebox";
 import { getSettingsListTheme } from "@earendil-works/pi-coding-agent";
@@ -128,7 +128,7 @@ export default async function (pi: ExtensionAPI) {
 
     const connectedCount = registry?.getConnectedCount() ?? 0;
     const toolCount = initStats?.tools ?? 0;
-    const enabledCount = registeredTools.size - disabledTools.size;
+    const enabledCount = countEnabledTools(registeredTools, disabledTools);
 
     if (initError) {
       ctx.ui.setStatus("mcp", `Error: ${initError}`);

@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { McpClient } from "../src/McpClient.js";
 
 // We test McpClient's disconnect/reconnect/connect logic
@@ -27,9 +29,19 @@ vi.mock("@modelcontextprotocol/sdk/client/stdio.js", () => ({
   StdioClientTransport: vi.fn(),
 }));
 
+vi.mock("@modelcontextprotocol/sdk/client/sse.js", () => ({
+  SSEClientTransport: vi.fn(),
+}));
+
+vi.mock("@modelcontextprotocol/sdk/client/streamableHttp.js", () => ({
+  StreamableHTTPClientTransport: vi.fn(),
+}));
+
 describe("McpClient", () => {
   beforeEach(() => {
     sdk.clients.length = 0;
+    vi.mocked(SSEClientTransport).mockClear();
+    vi.mocked(StreamableHTTPClientTransport).mockClear();
   });
 
   it("connects via stdio transport for local config", async () => {
@@ -95,6 +107,41 @@ describe("McpClient", () => {
     const config = { type: "remote" as const, url: "ws://localhost:8080/mcp" };
     const client = new McpClient(config);
     await client.connect();
+    expect(client.isConnected()).toBe(true);
+  });
+
+  it("constructs only the explicit sse transport when transport is 'sse'", async () => {
+    const config = {
+      type: "remote" as const,
+      url: "http://localhost:8080/mcp",
+      transport: "sse" as const,
+    };
+    const client = new McpClient(config);
+    await client.connect();
+    expect(SSEClientTransport).toHaveBeenCalledTimes(1);
+    expect(StreamableHTTPClientTransport).not.toHaveBeenCalled();
+    expect(client.isConnected()).toBe(true);
+  });
+
+  it("constructs only the explicit streamable-http transport when transport is 'streamable-http'", async () => {
+    const config = {
+      type: "remote" as const,
+      url: "http://localhost:8080/mcp",
+      transport: "streamable-http" as const,
+    };
+    const client = new McpClient(config);
+    await client.connect();
+    expect(StreamableHTTPClientTransport).toHaveBeenCalledTimes(1);
+    expect(SSEClientTransport).not.toHaveBeenCalled();
+    expect(client.isConnected()).toBe(true);
+  });
+
+  it("keeps auto-detect order (streamable-http first) when transport is unset", async () => {
+    const config = { type: "remote" as const, url: "http://localhost:8080/mcp" };
+    const client = new McpClient(config);
+    await client.connect();
+    expect(StreamableHTTPClientTransport).toHaveBeenCalledTimes(1);
+    expect(SSEClientTransport).not.toHaveBeenCalled();
     expect(client.isConnected()).toBe(true);
   });
 
