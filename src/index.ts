@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { McpRegistry } from "./McpRegistry.js";
 import { McpToolAdapter } from "./McpToolAdapter.js";
 import { ConfigLoader } from "./ConfigLoader.js";
+import { enabledToolNames } from "./toolFilter.js";
 import type { McpConfig } from "./types.js";
 import { Type } from "@sinclair/typebox";
 import { getSettingsListTheme } from "@earendil-works/pi-coding-agent";
@@ -358,8 +359,10 @@ export default async function (pi: ExtensionAPI) {
 
 function applyToolFilter(pi: ExtensionAPI): void {
   const allTools = pi.getAllTools();
-  const enabledToolNames = allTools
-    .map((t) => t.name)
-    .filter((name) => !name.startsWith("mcp_") || !disabledTools.has(name));
-  pi.setActiveTools(enabledToolNames);
+  const enabled = enabledToolNames(
+    allTools.map((t) => t.name),
+    registeredTools,
+    disabledTools,
+  );
+  pi.setActiveTools(enabled);
 }
