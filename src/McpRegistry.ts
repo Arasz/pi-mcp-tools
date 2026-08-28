@@ -2,6 +2,7 @@ import type { McpServerConfig } from "./types.js";
 import { McpClient } from "./McpClient.js";
 
 const MAX_RECONNECT_ATTEMPTS = 10;
+const HEALTH_CHECK_TIMEOUT_MS = 5000;
 
 export class McpRegistry {
   private clients: Map<string, McpClient> = new Map();
@@ -151,8 +152,22 @@ export class McpRegistry {
 
     for (const [name, client] of this.clients) {
       try {
-        await client.listTools();
-        results.set(name, true);
+        const listToolsPromise = client.listTools();
+        let timeoutTimer: NodeJS.Timeout | undefined;
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          timeoutTimer = setTimeout(
+            () => reject(new Error(`Health check timed out after ${HEALTH_CHECK_TIMEOUT_MS}ms`)),
+            HEALTH_CHECK_TIMEOUT_MS,
+          );
+          timeoutTimer.unref();
+        });
+
+        try {
+          await Promise.race([listToolsPromise, timeoutPromise]);
+          results.set(name, true);
+        } finally {
+          clearTimeout(timeoutTimer);
+        }
       } catch {
         results.set(name, false);
         if (this.autoReconnect) {

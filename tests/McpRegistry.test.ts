@@ -172,3 +172,40 @@ describe("McpRegistry auto-reconnect", () => {
     expect(state.instances).toHaveLength(3);
   });
 });
+
+describe("McpRegistry healthCheck", () => {
+  let consoleError: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    state.instances.length = 0;
+    state.connectBehavior = () => Promise.resolve();
+    consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    consoleError.mockRestore();
+  });
+
+  it("marks a server unhealthy when listTools hangs past the health-check timeout", async () => {
+    const registry = new McpRegistry(configs, false, 5000);
+    await registry.initialize();
+    state.instances[0].listTools = vi.fn(() => new Promise(() => {}));
+
+    const check = registry.healthCheck();
+    await vi.advanceTimersByTimeAsync(5000);
+    const results = await check;
+
+    expect(results.get("srv")).toBe(false);
+  });
+
+  it("marks a responsive server healthy", async () => {
+    const registry = new McpRegistry(configs, false, 5000);
+    await registry.initialize();
+
+    const results = await registry.healthCheck();
+
+    expect(results.get("srv")).toBe(true);
+  });
+});
