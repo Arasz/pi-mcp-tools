@@ -17,15 +17,26 @@ export class McpClient {
     | null = null;
   private config: McpServerConfig;
   private connected: boolean = false;
+  private closed: boolean = false;
 
   constructor(config: McpServerConfig) {
     this.config = config;
-    this.client = new Client({ name: "pi-mcp-extension", version: "1.0.0" });
+    this.client = this.createClient();
+  }
+
+  private createClient(): Client {
+    return new Client({ name: "pi-mcp-extension", version: "1.0.0" });
   }
 
   async connect(): Promise<void> {
     if (this.connected) {
       return;
+    }
+
+    if (this.closed) {
+      // A closed Client is never reused: reconnect always connects a fresh one.
+      this.client = this.createClient();
+      this.closed = false;
     }
 
     try {
@@ -71,8 +82,8 @@ export class McpClient {
 
     for (const { type, create } of transports) {
       let attemptTimer: NodeJS.Timeout | undefined;
-      // Each transport attempt needs its own Client instance because
-      // Client.close() makes the client unusable for further connections
+      // Each transport attempt gets its own Client so a failed attempt's state
+      // cannot leak into the next one.
       const attemptClient = new Client({ name: "pi-mcp-extension", version: "1.0.0" });
       try {
         const transport = create();
@@ -148,6 +159,7 @@ export class McpClient {
     } finally {
       this.transport = null;
       this.connected = false;
+      this.closed = true;
     }
   }
 

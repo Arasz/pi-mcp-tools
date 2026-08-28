@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { McpClient } from "../src/McpClient.js";
 
 // We test McpClient's disconnect/reconnect/connect logic
@@ -84,5 +85,17 @@ describe("McpClient", () => {
     const client = new McpClient(config);
     await client.connect();
     expect(client.isConnected()).toBe(true);
+  });
+
+  it("reconnect() constructs a fresh SDK Client after disconnect", async () => {
+    const config = { type: "local" as const, command: ["node", "server.js"] };
+    const client = new McpClient(config);
+    await client.connect();
+    await client.disconnect();
+    vi.mocked(Client).mockClear();
+
+    await client.reconnect();
+
+    expect(vi.mocked(Client).mock.calls.length).toBe(1);
   });
 });
