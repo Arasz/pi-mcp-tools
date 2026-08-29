@@ -1,25 +1,49 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { McpClient } from "../src/McpClient.js";
 
 // We test McpClient's disconnect/reconnect/connect logic
 // without an actual MCP server by intercepting the SDK client.
 
+const sdk = vi.hoisted(() => ({ clients: [] as any[] }));
+
 vi.mock("@modelcontextprotocol/sdk/client/index.js", () => ({
-  Client: vi.fn().mockImplementation(() => ({
-    connect: vi.fn().mockResolvedValue(undefined),
-    close: vi.fn().mockResolvedValue(undefined),
-    listTools: vi.fn().mockResolvedValue({ tools: [] }),
-    callTool: vi.fn().mockResolvedValue({ content: [{ type: "text", text: "ok" }] }),
-    setNotificationHandler: vi.fn(),
-    onclose: null,
-  })),
+  Client: vi.fn().mockImplementation(() => {
+    const instance = {
+      connect: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+      listTools: vi.fn().mockResolvedValue({ tools: [] }),
+      callTool: vi.fn().mockResolvedValue({ content: [{ type: "text", text: "ok" }] }),
+      setNotificationHandler: vi.fn(),
+      onclose: null,
+      onerror: null,
+    };
+    sdk.clients.push(instance);
+    return instance;
+  }),
 }));
 
 vi.mock("@modelcontextprotocol/sdk/client/stdio.js", () => ({
   StdioClientTransport: vi.fn(),
 }));
 
+vi.mock("@modelcontextprotocol/sdk/client/sse.js", () => ({
+  SSEClientTransport: vi.fn(),
+}));
+
+vi.mock("@modelcontextprotocol/sdk/client/streamableHttp.js", () => ({
+  StreamableHTTPClientTransport: vi.fn(),
+}));
+
 describe("McpClient", () => {
+  beforeEach(() => {
+    sdk.clients.length = 0;
+    vi.mocked(SSEClientTransport).mockClear();
+    vi.mocked(StreamableHTTPClientTransport).mockClear();
+  });
+
   it("connects via stdio transport for local config", async () => {
     const config = { type: "local" as const, command: ["node", "server.js"] };
     const client = new McpClient(config);
@@ -84,5 +108,114 @@ describe("McpClient", () => {
     const client = new McpClient(config);
     await client.connect();
     expect(client.isConnected()).toBe(true);
+  });
+
+  it("constructs only the explicit sse transport when transport is 'sse'", async () => {
+    const config = {
+      type: "remote" as const,
+      url: "http://localhost:8080/mcp",
+      transport: "sse" as const,
+    };
+    const client = new McpClient(config);
+    await client.connect();
+    expect(SSEClientTransport).toHaveBeenCalledTimes(1);
+    expect(StreamableHTTPClientTransport).not.toHaveBeenCalled();
+    expect(client.isConnected()).toBe(true);
+  });
+
+  it("constructs only the explicit streamable-http transport when transport is 'streamable-http'", async () => {
+    const config = {
+      type: "remote" as const,
+      url: "http://localhost:8080/mcp",
+      transport: "streamable-http" as const,
+    };
+    const client = new McpClient(config);
+    await client.connect();
+    expect(StreamableHTTPClientTransport).toHaveBeenCalledTimes(1);
+    expect(SSEClientTransport).not.toHaveBeenCalled();
+    expect(client.isConnected()).toBe(true);
+  });
+
+  it("keeps auto-detect order (streamable-http first) when transport is unset", async () => {
+    const config = { type: "remote" as const, url: "http://localhost:8080/mcp" };
+    const client = new McpClient(config);
+    await client.connect();
+    expect(StreamableHTTPClientTransport).toHaveBeenCalledTimes(1);
+    expect(SSEClientTransport).not.toHaveBeenCalled();
+    expect(client.isConnected()).toBe(true);
+  });
+
+  it("reconnect() constructs a fresh SDK Client after disconnect", async () => {
+    const config = { type: "local" as const, command: ["node", "server.js"] };
+    const client = new McpClient(config);
+    await client.connect();
+    await client.disconnect();
+    vi.mocked(Client).mockClear();
+
+    await client.reconnect();
+
+    expect(vi.mocked(Client).mock.calls.length).toBe(1);
+  });
+
+  it("fires onDisconnected when the connection closes unexpectedly", async () => {
+    const config = { type: "local" as const, command: ["node", "server.js"] };
+    const client = new McpClient(config);
+    const onDisconnected = vi.fn();
+    client.onDisconnected = onDisconnected;
+    await client.connect();
+    const sdkClient = sdk.clients[sdk.clients.length - 1];
+
+    sdkClient.onclose();
+
+    expect(onDisconnected).toHaveBeenCalledTimes(1);
+    expect(client.isConnected()).toBe(false);
+  });
+
+  it("does not fire onDisconnected when disconnect() is intentional", async () => {
+    const config = { type: "local" as const, command: ["node", "server.js"] };
+    const client = new McpClient(config);
+    const onDisconnected = vi.fn();
+    client.onDisconnected = onDisconnected;
+    await client.connect();
+    const sdkClient = sdk.clients[sdk.clients.length - 1];
+    // Server-death semantics: closing fires the SDK's onclose callback
+    sdkClient.close.mockImplementation(async () => {
+      sdkClient.onclose();
+    });
+
+    await client.disconnect();
+
+    expect(onDisconnected).not.toHaveBeenCalled();
+  });
+
+  it("fires onDisconnected only once when onclose and onerror both fire", async () => {
+    const config = { type: "local" as const, command: ["node", "server.js"] };
+    const client = new McpClient(config);
+    const onDisconnected = vi.fn();
+    client.onDisconnected = onDisconnected;
+    await client.connect();
+    const sdkClient = sdk.clients[sdk.clients.length - 1];
+
+    sdkClient.onerror(new Error("transport broke"));
+    sdkClient.onclose();
+
+    expect(onDisconnected).toHaveBeenCalledTimes(1);
+    expect(client.isConnected()).toBe(false);
+  });
+
+  it("forwards an abort signal to the SDK callTool options", async () => {
+    const config = { type: "local" as const, command: ["node", "server.js"] };
+    const client = new McpClient(config);
+    await client.connect();
+    const sdkClient = sdk.clients[sdk.clients.length - 1];
+    const controller = new AbortController();
+
+    await client.callTool("test", { arg: 1 }, controller.signal);
+
+    expect(sdkClient.callTool).toHaveBeenCalledWith(
+      { name: "test", arguments: { arg: 1 } },
+      undefined,
+      { signal: controller.signal },
+    );
   });
 });
