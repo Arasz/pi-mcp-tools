@@ -46,6 +46,37 @@ Add to `~/.pi/agent/settings.json`:
 }
 ```
 
+## Project-scope `.mcp.json` (claude format)
+
+At every `session_start`, the extension also reads `<cwd>/.mcp.json` — the claude-format
+file Claude Code uses — when pi's project trust resolves true for the working directory
+(projects holding no trust-requiring resources — no `.pi/{settings.json,extensions,skills,…}`
+and no ancestor `.agents/skills` — resolve trusted in every mode, including headless
+`-p`/`--mode json`/`--mode rpc`). Project entries win over same-named global entries; when
+the project is untrusted or the file is absent/unparseable, the global `mcp` key from
+settings.json is the fallback — never a partial merge.
+
+Claude→fork conversion: `command` string (+ `args`) → local command array; absent or
+`"stdio"` type → local; `${HOME}` prefixes in command/args/cwd are expanded; other
+`${VAR}` patterns skip the entry with a warning; `type:"http"/"sse"` + `url` → remote
+(both transports supported); unknown shapes skip with a warning and never block other
+entries; an unparseable file never produces a partial arm.
+
+`tools` handling: `["*"]`, `[]` and absent mean **no filtering**. Non-glob entries pass
+through as regexes (the fork's documented `filterPatterns` semantics); glob-ish patterns
+(`*`, `?`) are anchored; a pattern that does not compile is skipped with a warning and
+cannot take down its server's other tools.
+
+What armed what, and why, is always observable: the `mcp_list_servers` **tool** (callable
+in headless runs — extension commands throw when queued) and the `/mcp-status` command
+render a per-server merge ledger (`project:.mcp.json` / `global settings` /
+`skipped:unsupported-shape` / `skipped:unexpanded-var` / `untrusted-project`) with skipped
+counts and connect failures, no `--mcp-debug` needed.
+
+The capability marker file `.ai-badger-capability-project-scope-mcp` ships with this
+extension; the ai-badger scaffold's migration adjustments gate on its presence in the
+installed directory (never on a version number).
+
 ## Config Format
 
 Each MCP server is a key under `"mcp"` with the following structure:
