@@ -338,7 +338,11 @@ describe("pi-mcp-tools lifecycle", () => {
       await expect(startSession(harness, cwd, true)).resolves.toBeDefined();
 
       const report = await listServersReport(harness);
-      expect(consoleError).toHaveBeenCalledWith(expect.stringContaining("converter exploded"), expect.anything());
+      const degradeCall = consoleError.mock.calls.find((c) =>
+        String(c[0]).includes("reading project .mcp.json failed"),
+      );
+      expect(degradeCall).toBeTruthy();
+      expect((degradeCall![1] as Error).message).toBe("converter exploded");
       // Degraded, not dead: the global server still arms.
       expect(report.servers.find((s: any) => s.name === "globalsrv")).toMatchObject({
         source: "global settings",
