@@ -240,7 +240,11 @@ describe("ConfigLoader", () => {
       const { config, ledger } = ConfigLoader.mergeMcpConfigs(globalCfg, project, false);
       expect(config!.alpha).toEqual({ type: "local", command: ["global-alpha"] });
       expect(config!.gamma).toBeUndefined();
-      expect(ledger.entries.find((e) => e.name === "alpha")!.source).toBe("untrusted-project");
+      // Additive rows: the global same-named entry armed AND the project's
+      // gated declaration is visible.
+      const alphaRows = ledger.entries.filter((e) => e.name === "alpha").map((e) => e.source);
+      expect(alphaRows).toContain("global settings");
+      expect(alphaRows).toContain("untrusted-project");
       expect(ledger.entries.find((e) => e.name === "beta")!.source).toBe("global settings");
       expect(ledger.untrustedCount).toBe(1);
     });
