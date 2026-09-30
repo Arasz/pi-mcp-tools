@@ -2,6 +2,7 @@ import type { TSchema } from "@sinclair/typebox";
 import type { McpClient } from "./McpClient.js";
 import type { McpTool } from "./types.js";
 import { SchemaConverter } from "./SchemaConverter.js";
+import { mcpCardRenderers } from "./McpCardRenderers.js";
 import { Type } from "@sinclair/typebox";
 import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { TextContent, ImageContent } from "@earendil-works/pi-ai";
@@ -20,17 +21,30 @@ export class McpToolAdapter {
     filterPatterns?: string[],
   ): ToolDefinition<TSchema, TDetails> | null {
     if (filterPatterns && filterPatterns.length > 0) {
-      const matches = filterPatterns.some((pattern) => {
-        const regex = new RegExp(pattern);
-        return regex.test(mcpTool.name);
-      });
-      if (!matches) {
+      // Every RegExp construction is try/caught (plan M1): a poison pattern is
+      // dropped with a warning and can never escape into the per-server catch,
+      // which would kill every tool of the server. Fail-open when no pattern
+      // compiles: hiding every tool silently would be the worse failure.
+      const compiled: RegExp[] = [];
+      for (const pattern of filterPatterns) {
+        try {
+          compiled.push(new RegExp(pattern));
+        } catch {
+          console.warn(
+            `[pi-mcp-tools] server '${serverName}': invalid filter pattern '${pattern}' ignored (tool filtering degraded)`,
+          );
+        }
+      }
+      if (compiled.length > 0 && !compiled.some((regex) => regex.test(mcpTool.name))) {
         return null;
       }
     }
 
     const prefix = toolPrefix || `mcp_${serverName}`;
-    const toolName = `${prefix}_${mcpTool.name}`;
+    // Identifier-safe pi name: dispatch resolves tool calls by exact name match
+    // while codemode exposes tools as normalized JS identifiers (no dashes) —
+    // registering the normalized spelling keeps every surface naming one tool.
+    const toolName = `${prefix}_${mcpTool.name}`.replace(/-/g, "_");
 
     let parameters: TSchema;
     try {
@@ -44,6 +58,9 @@ export class McpToolAdapter {
       label: `${serverName}: ${mcpTool.name}`,
       description: mcpTool.description || `Call ${mcpTool.name} on ${serverName} MCP server`,
       parameters,
+      // Card renderers key on the BARE mcpTool.name (McpCardRenderers): the
+      // prefixed pi name is configurable per server and must never drive dispatch.
+      ...mcpCardRenderers(mcpTool.name),
       async execute(_toolCallId, params, signal, _onUpdate, _ctx: ExtensionContext) {
         try {
           if (signal?.aborted) {
