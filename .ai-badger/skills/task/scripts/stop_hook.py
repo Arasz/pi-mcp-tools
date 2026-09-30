@@ -26,6 +26,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import tracker_lib as lib
 
+# pylint: disable=no-member  # debug_log is an exec-populated shim; pylint cannot see its members
 try:
     import debug_log  # pylint: disable=wrong-import-position
 except ImportError:  # pragma: no cover - a missing logger must never break a hook
@@ -71,20 +72,6 @@ def field(payload: dict, *names, default=""):
     return default
 
 
-def is_empty_checkpoint(checkpoint) -> bool:
-    """True when a checkpoint carries no measurement at all.
-
-    `assistantMessages` is deliberately not consulted: the degenerate records downstream read
-    `contextTokens: 0, assistantMessages: 3` with an all-zero `cumulative`, and a message count
-    with no tokens behind it measures nothing.
-    """
-    if not isinstance(checkpoint, dict):
-        return True
-    if checkpoint.get("contextTokens"):
-        return False
-    return not any((checkpoint.get("cumulative") or {}).values())
-
-
 def replaces(existing, candidate) -> bool:
     """Whether *candidate* may be written over *existing*.
 
@@ -92,9 +79,9 @@ def replaces(existing, candidate) -> bool:
     that spent nothing — so an empty checkpoint is refused over a populated one. Overwriting
     real numbers with zeros is worse than not checkpointing at all (#141).
     """
-    if is_empty_checkpoint(existing):
+    if lib.is_empty_checkpoint(existing):
         return True
-    return not is_empty_checkpoint(candidate)
+    return not lib.is_empty_checkpoint(candidate)
 
 
 def blocks_spent(tasks: dict, session_id: str) -> int:
@@ -219,14 +206,14 @@ def main() -> int:
     resumed = field(payload, "stop_hook_active", "stopHookActive", default=False)
 
     block_reasons = []
-    with lib.locked_store():
-        tasks = lib.load_tasks()
+    with lib.tracking_transaction() as store:
+        tasks = lib.load_tasks(store)
         mine = [e for e in tasks["tasks"] if e.get("sessionId") == session_id]
         if not mine:
             _debug("skip", reason="no_tracked_task")
             return 0
 
-        usage = lib.load_usage()
+        usage = lib.load_usage(store)
         usage_dirty = checkpoint_tasks(mine, usage, transcript)
         tasks_dirty = promote_started(mine)
 
@@ -235,9 +222,9 @@ def main() -> int:
             tasks_dirty = tasks_dirty or enforcement_dirty
 
         if tasks_dirty:
-            lib.save_json(lib.EXECUTED_TASKS, tasks)
+            lib.save_tasks(store, tasks)
         if usage_dirty:
-            lib.save_json(lib.TOKEN_USAGE, usage)
+            lib.save_usage(store, usage)
 
     if block_reasons:
         _debug("block", reasons=len(block_reasons))

@@ -4,7 +4,7 @@ Universal MCP tools extension for the pi coding agent — connects to MCP server
 
 > Domain: Developer tooling: MCP server bridge for the pi coding agent
 > Stacks: github, node, ts
-> Scaffolded by ai-badger 0.140.0. Source of truth for this file: `.ai-badger/CLAUDE.md`.
+> Scaffolded by ai-badger 0.184.1. Source of truth for this file: `.ai-badger/CLAUDE.md`.
 
 ## Commands
 
@@ -38,7 +38,10 @@ This project understands prompt markers (see `.ai-badger/skills/prompt-markers`)
 - `f:` / `feedback:` — a high-priority correction; adjust immediately.
 - `e:` / `extension:` — a request to expand the current task's scope.
 - `q:` / `queue:` — a queued instruction to analyze and run after active work completes.
+- `i:` / `important:` — important: high priority, do not drop it; handle at the next natural boundary.
 - `i!:` / `important!:` — immediate emergency interrupt: STOP, pause/cancel active tasks, and react instantly.
+
+Every marker accepts an **importance token**: insert `!` before the colon (`f!:`, `queue!:`) to make that marker interrupt-grade — preempt current work and handle it first. On pi the session-signals extension aborts the running turn for you; here, treat a `!`-marker as preempting whatever is in flight — never queue it silently behind work already running.
 
 A marker is expanded by a `UserPromptSubmit` hook, which fires only when a message **starts a turn**. A message sent **mid-turn** — queued while work is already running — reaches the model as an attachment and never passes through that hook, so its marker is never expanded. Apply the behaviour above yourself whenever you see a marker arrive that way.
 
@@ -49,12 +52,6 @@ A marker is expanded by a `UserPromptSubmit` hook, which fires only when a messa
 Grep/Glob/Read** — they cost fewer tokens and return structural context (callers, dependents,
 test coverage) that file scanning cannot. Start at `semantic_search_nodes_tool`; fall back to
 Grep/Glob/Read only where the graph doesn't reach. Each tool's own description covers the rest.
-
-<!-- Hermes MCP tools -->
-## MCP Tools: hermes
-
-Read operations use Hermes's session store and work without a running gateway; sending messages
-needs the gateway and its platform adapters. The server's own tool descriptions cover the rest.
 
 <!-- ai-raccoon MCP tools -->
 ## MCP Tools: ai-raccoon
@@ -96,9 +93,31 @@ those IDs. Capture visual evidence with `browser_take_screenshot`. Monitor API c
 or complex interactions, execute custom Playwright scripts with `browser_run_code_unsafe`.
 Each tool's own description covers the rest.
 
+<!-- task-graph MCP tools -->
+## MCP Tools: task-graph
+
+`task-graph` owns the decomposed task plan — a DAG of `step`s carrying status, acceptance criteria and evidence, persisted beside the task tracker in the project's `tracking.db`.
+
+Plan time: `plan_create` validates and stores the DAG; `plan_replace` revises it before
+execution starts; `steps_ready` returns the dispatchable frontier and its waves. Execution:
+`step_start`, `step_complete` (evidence + AC results), `step_fail`, `step_skip`, `ac_check`;
+`progress_checklist` is the status view, and `plan_get`, `step_get`, `plan_export` read back.
+
+Launched as `uv run --script .ai-badger/skills/task-decomposition/scripts/task_graph_server.py`
+(`uv` on PATH; the PEP 723 env is fetched on first launch). No project `.mcp.json` (Hermes,
+worktree sessions) → use the CLI twin: `task_graph_cli.py <tool> --json`. Hermes operators:
+add the proposed `mcp_servers:` entry to `~/.hermes/config.yaml`, anchoring the script path to
+the project root — the declaration is project-relative.
+
 
 
 ## Non-negotiable invariants
+
+- **Announce parallel work** — When another agent session shares the project, announce started work, opened PRs, review requests and merges on the project bus — read `multi-agent-communication` when parallel work is active.
+  → `.ai-badger/invariants/announce-parallel-work.md`
+
+- **Diagrams default to Archify** — Author architecture, workflow, sequence, data-flow and lifecycle diagrams with the `archify` skill when it is installed.
+  → `.ai-badger/invariants/archify-diagrams.md`
 
 - **Ask if a simpler shape would do** — Before calling any design or change finished, ask whether it is over-engineered and what the simpler version would look like.
   → `.ai-badger/invariants/ask-if-simpler.md`
@@ -130,8 +149,11 @@ Each tool's own description covers the rest.
 - **Measure only when the measurement pays** — Run your own benchmark or experiment when the time it costs is repaid by the decision it settles, and not otherwise.
   → `.ai-badger/invariants/measure-when-it-pays.md`
 
-- **Minimal comments** — Keep doc comments to 1-3 lines stating the contract, not the provenance or rationale — point at an ADR or spec doc for the "why" instead of writing an essay inline.
+- **Minimal comments** — Write a doc comment as the 1-3 line contract an editor shows on hover — what the thing is and how to use it — and never let a PR, issue or ticket reference appear anywhere in it.
   → `.ai-badger/invariants/minimal-comments.md`
+
+- **Let git write git's own storage** — Write a git dir through `git config`, `git remote` and `git branch --set-upstream-to`, each of which takes the config lock and rewrites only the key it was given.
+  → `.ai-badger/invariants/never-hand-edit-the-git-dir.md`
 
 - **Use platform security APIs** — Always use the platform's built-in security and crypto APIs.
   → `.ai-badger/invariants/no-hand-rolled-crypto.md`
@@ -174,6 +196,9 @@ Each tool's own description covers the rest.
 
 - **TDD is mandatory** — Write a failing, behavior-focused test before any production code change.
   → `.ai-badger/invariants/tdd-mandatory.md`
+
+- **Run each suite once; CI runs the rest** — Normal flow runs the modified surface's suite once — plus the suites of anything that consumes the changed behavior, so an API change pulls the frontend end-to-end that exercises it — and leaves the full suite to CI on push.
+  → `.ai-badger/invariants/test-run-economy.md`
 
 - **Tests are designed before they are written, and judged after** — Green is the floor, not the evidence: a test list comes out of the acceptance criteria before the first test is written (`design-tests`, each row naming the failure mode it targets and the mutation that proves it real), and a change that adds or alters tests is not done until something other than its author has run `review-tests` and asked whether that suite could have gone red.
   → `.ai-badger/invariants/tests-are-designed-and-reviewed.md`

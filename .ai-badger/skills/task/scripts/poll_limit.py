@@ -2,9 +2,9 @@
 """Background usage-limit poller for the /task skill.
 
 Starts as a daemon-friendly foreground process. It watches Claude availability;
-when a previous limited state becomes available again, it resumes active /task
-sessions discovered from task tracking data, falling back to Claude's user-level
-transcript store (~/.claude/projects) when tracking is not yet populated.
+when a previous limited state becomes available again, it resumes the sessions of
+this project's unfinished /task tasks, read from the tracking store, skipping any
+session whose recorded process is still running.
 
 Passing --auto-wm-on-reset additionally runs `/auto-wm away 4h` on that transition.
 It is off by default: nothing may hand tool approval to the agent unattended.
@@ -16,7 +16,6 @@ It is off by default: nothing may hand tool approval to the agent unattended.
 from __future__ import annotations
 
 import argparse
-import json
 import math
 import os
 import shutil
@@ -43,7 +42,6 @@ PROJECT_ROOT = lib.PROJECT_ROOT
 # ".claude/task-tracking/" here would silently point at a directory nothing else ever writes to.
 LOG_FILE = lib.DATA_DIR / "poll_limit.log"
 PID_FILE = lib.DATA_DIR / "poll_limit.pid"
-STATUSLINE_STATE = lib.DATA_DIR / "statusline-state.json"
 DEFAULT_AVAILABLE_INTERVAL_SECONDS = 300
 STATUSLINE_FRESH_SECONDS = 180
 LIMIT_WAIT_SCHEDULE_SECONDS = [7200, 1800, 900, 300]
@@ -89,13 +87,6 @@ def log(message: str) -> None:
         pass
 
 
-def _read_json(path: Path, default):
-    try:
-        return json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError):
-        return default
-
-
 def _pid_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
@@ -134,9 +125,9 @@ def statusline_state_age_seconds(state: dict) -> float | None:
     return time.time() - captured_epoch
 
 
-def check_limit_from_statusline(state_path: Path = STATUSLINE_STATE) -> tuple[bool, str] | None:
+def check_limit_from_statusline() -> tuple[bool, str] | None:
     """Use captured statusLine rate-limit metadata only when the capture is fresh."""
-    state = _read_json(state_path, {})
+    state = lib.load_statusline_state()
     age_seconds = statusline_state_age_seconds(state)
     if age_seconds is None or age_seconds > STATUSLINE_FRESH_SECONDS:
         return None
@@ -190,69 +181,25 @@ def check_limit() -> tuple[bool, str]:
     return check_limit_with_probe()
 
 
-def discover_target_sessions(
-    project_root: Path = PROJECT_ROOT, user_claude_dir: Path | None = None
-) -> list[TargetSession]:
-    sessions = _discover_task_sessions(project_root)
-    if sessions:
-        return sessions
-    fallback_dir = user_claude_dir or (Path.home() / ".claude")
-    return _discover_user_claude_sessions(project_root, fallback_dir)
+def _unfinished_tasks() -> list[dict]:
+    """Tracked tasks with a session that are not FINISHED, read through the tracking store."""
+    return [entry for entry in lib.load_tasks()["tasks"]
+            if entry.get("state") != lib.STATE_FINISHED and entry.get("sessionId")]
 
 
-def _discover_task_sessions(project_root: Path) -> list[TargetSession]:
-    tasks_path = lib.compute_paths(project_root)["executed_tasks"]
-    doc = _read_json(tasks_path, {"tasks": []})
-    found: list[TargetSession] = []
-    for entry in doc.get("tasks", []):
-        if entry.get("state") == "FINISHED" or not entry.get("sessionId"):
-            continue
-        found.append(
-            TargetSession(
-                session_id=entry["sessionId"],
-                task_id=entry.get("taskId", ""),
-                transcript_path=entry.get("transcriptPath", ""),
-                source="task-tracking",
-            )
+def discover_target_sessions() -> list[TargetSession]:
+    """Sessions of this project's unfinished tracked tasks whose process is no longer running."""
+    live = lib.live_session_ids()
+    return [
+        TargetSession(
+            session_id=entry["sessionId"],
+            task_id=entry.get("taskId", ""),
+            transcript_path=entry.get("transcriptPath", ""),
+            source="task-tracking",
         )
-    return found
-
-
-def _discover_user_claude_sessions(
-    project_root: Path, user_claude_dir: Path
-) -> list[TargetSession]:
-    projects_dir = user_claude_dir / "projects"
-    if not projects_dir.exists():
-        return []
-    found: dict[str, TargetSession] = {}
-    for transcript in projects_dir.rglob("*.jsonl"):
-        session_id = _session_id_from_transcript(transcript, project_root)
-        if session_id:
-            found[session_id] = TargetSession(
-                session_id=session_id,
-                transcript_path=str(transcript),
-                source="claude-projects",
-            )
-    return list(found.values())
-
-
-def _session_id_from_transcript(path: Path, project_root: Path) -> str:
-    try:
-        lines = path.read_text(errors="ignore").splitlines()
-    except OSError:
-        return ""
-    for line in reversed(lines[-50:]):
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        cwd = record.get("cwd") or record.get("workspace") or record.get("projectPath")
-        if cwd and Path(cwd) != project_root:
-            continue
-        sid = record.get("sessionId") or record.get("session_id")
-        if sid:
-            return str(sid)
-    return path.stem if lines else ""
+        for entry in _unfinished_tasks()
+        if entry["sessionId"] not in live
+    ]
 
 
 def run_auto_wm() -> bool:
@@ -324,7 +271,7 @@ def poll_once(
                     sleep_between_resumes(resume_delay_seconds)
                 session_resumer(target)
         else:
-            log("No active task or Claude project sessions found to resume.")
+            log("No unfinished tracked task with a stopped session to resume.")
     state.was_limited = limited
     if limited:
         state.limited_checks += 1
@@ -352,13 +299,9 @@ def bounded_max_hours(hours: float) -> float:
     return min(hours, MAX_MAX_HOURS)
 
 
-def _has_unfinished_task(project_root: Path | None = None) -> bool:
-    """Whether task tracking still holds a task this poller could resume.
-
-    Resolves PROJECT_ROOT at call time: a module constant bound as a default argument freezes
-    at import, which is invisible until something reassigns it.
-    """
-    return bool(_discover_task_sessions(project_root or PROJECT_ROOT))
+def _has_unfinished_task() -> bool:
+    """Whether task tracking still holds a task this poller could resume, live or not."""
+    return bool(_unfinished_tasks())
 
 
 def remove_pid(pid_file: Path | None = None) -> None:

@@ -4,6 +4,7 @@ description: >
   Work-routing lead for multi-package sessions. Dispatches to specialist
   personas; does only integration, arbitration, and gate-running itself.
 model: opus
+level: high
 ---
 
 # Delegator
@@ -82,6 +83,12 @@ lane, verifier, verdict. Append the row when the dispatch goes out; fill the
 verdict when the verifier reports. It is the audit trail for the contract — a
 reader should see that every package had a named lane and a named check
 without parsing a transcript. Report it at the end alongside what shipped.
+
+Under pi, each row also records the dispatch's token cost: from the
+`delegation-result` followUp's `details.usage` (input+output — cache tokens
+excluded for cross-source parity) `task_tracker.py subagent <taskId> --delegation
+<receipt-id> --description "<what>"` once the run settled, so the ledger
+doubles as the cost audit.
 
 ## Scope boundary
 

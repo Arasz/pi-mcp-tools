@@ -15,10 +15,12 @@ Exit codes: 0 = up to date or changes applied, 1 = drift found but re-scaffold
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import importlib.util
 import json
 import os
 import sys
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -163,6 +165,17 @@ def _nested_checkouts(directory: str, names: List[str]) -> set:
     return {name for name in names if (parent / name / ".git").exists()}
 
 
+def _backup_ignore(directory: str, names: List[str]) -> set:
+    """Nested checkouts, plus any `*.db*` file — the live task-tracking SQLite database and
+    its `-wal`/`-shm` sidecars (L3-8). The backup is a snapshot of config and generated files,
+    not a second copy of a live, constantly-rewritten database; copying it in also puts it
+    somewhere the managed .gitignore block never looks, so it shows up as untracked.
+    """
+    return _nested_checkouts(directory, names) | {
+        name for name in names if fnmatch.fnmatch(name, "*.db*")
+    }
+
+
 def check_breaking_and_backup(root: Path, target: Path) -> Dict[str, Any]:
     """Back up .ai-badger/ before any re-scaffold, and report whether the jump is breaking.
 
@@ -183,7 +196,7 @@ def check_breaking_and_backup(root: Path, target: Path) -> Dict[str, Any]:
     bckp = target / bl.BACKUP_DIR_NAME
     if bckp.exists():
         shutil.rmtree(bckp)
-    shutil.copytree(aib, bckp, ignore=_nested_checkouts)
+    shutil.copytree(aib, bckp, ignore=_backup_ignore)
     return {"isBreaking": is_breaking, "backupPath": str(bckp)}
 
 
@@ -195,6 +208,39 @@ def check_prerequisites(target: Path) -> Optional[str]:
     if not (aib / "manifest.json").exists():
         return f"no .ai-badger/manifest.json at {aib} — project was never fully scaffolded"
     return None
+
+
+def run_doctor_preflight(root: Path, target: Path) -> Optional[List[Dict[str, Any]]]:
+    """The store doctor's read-only scan over the project's tracking root (P1, M2).
+
+    Report-only: a contained family's repair is the doctor verb's explicit --repair,
+    never a side effect of a refresh. Returns the resurrected rows, or None when the
+    scan finds nothing — or cannot run, since a missing store module must not break a
+    refresh that would otherwise succeed.
+    """
+    try:
+        store_mod = _load_script("engine/badger_store.py", root)
+        db_path, families = store_mod.doctor_target(target)
+        rows = store_mod.doctor_scan(db_path, families)
+    except (FileNotFoundError, AttributeError, OSError):
+        return None
+    return [row for row in rows if row.get("state") == "resurrected"] or None
+
+
+def ensure_project_id(target: Path) -> Optional[str]:
+    """Backfill the local project-id file so older scaffolds keep a stable identity."""
+    project_id_path = target / ".ai-badger" / "project-id"
+    project_id_path.parent.mkdir(parents=True, exist_ok=True)
+    if project_id_path.exists():
+        try:
+            value = project_id_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            value = ""
+        if value:
+            return value
+    new_value = f"{uuid.uuid4()}\n"
+    project_id_path.write_text(new_value, encoding="utf-8")
+    return new_value.strip()
 
 
 def run_drift(root: Path, manifest: Dict[str, Any],
@@ -254,7 +300,7 @@ def relink_hermes_skills(root: Path, target: Path, config: Dict[str, Any]) -> Di
     scaffold_mod = _load_script(
         "features/common/skills/welcome-ai-badger/scripts/scaffold.py", root
     )
-    return scaffold_mod.relink_hermes_skills(target, config, names)
+    return scaffold_mod.relink_hermes_skills(target, config, names, root=root)
 
 
 def delivered_skills(manifest: Dict[str, Any],
@@ -332,6 +378,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(json.dumps({"error": err}))
         return 2
 
+    # 1b. Store doctor pre-flight (P1): contained families surface in the report —
+    # reported, never repaired here; the doctor verb's --repair is the operator's step.
+    contained_families = run_doctor_preflight(root, target)
+
+    # 1c. Backfill the local project-id for older scaffolded repos
+    ensure_project_id(target)
+
     # 2. Read existing config
     config_path = target / ".ai-badger" / "config.json"
     try:
@@ -383,6 +436,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # newStacks is report-only (#134): a re-scaffold runs the *same* config and cannot
     # deliver a stack the config does not name, so it must not gate the re-scaffold.
+    # proseReview is report-only for a second reason: stale prose cannot gate the
+    # re-scaffold, because the re-scaffold re-renders the same words and would loop forever.
     has_drift = bool(drift_result.get("changed") or drift_result.get("removed")
                      or drift_result.get("orphaned") or drift_result.get("newItems")
                      or drift_result.get("versionChanged") or drift_result.get("configChanged"))
@@ -424,6 +479,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             "configChanged": drift_result.get("configChanged"),
             "invalid": drift_result.get("invalid", 0),
             "newItems": drift_result.get("newItems", []),
+            # The config's prose slots (project.summary / project.domain): re-rendered
+            # verbatim on every scaffold and checked by no fingerprint, so they go stale
+            # silently. Each entry carries a "human-written" note; reviewing them is the
+            # operator's job, never the re-scaffold's (config.json is project-owned, #172).
+            "proseReview": drift_result.get("proseReview", []),
         },
         "newStacks": new_stacks,
         # Derived, never recomputed: a second copy of the gate condition can disagree with
@@ -434,6 +494,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         report["forced"] = True
     if report_note:
         report["note"] = report_note
+    if contained_families:
+        report["containedFamilies"] = contained_families
     if scaffold_result:
         report["scaffold"] = scaffold_result
     if hermes_links["created"] or hermes_links["removed"]:

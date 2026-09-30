@@ -1,6 +1,6 @@
 {
   "$schema": "./schemas/config.schema.json",
-  "frameworkVersion": "0.140.0",
+  "frameworkVersion": "0.184.1",
   "project": {
     "name": "pi-mcp-tools",
     "summary": "Universal MCP tools extension for the pi coding agent — connects to MCP servers and registers their tools for the LLM",

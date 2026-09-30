@@ -84,14 +84,53 @@ def extract_keep_regions(text: str) -> List[str]:
 
 
 def carry_keep_regions(existing: str, body: str) -> str:
-    """Return `body` with every keep region of `existing` appended verbatim, in order.
+    """Return `body` carrying every keep region of `existing`, in order.
 
-    Regions land at the end because the templates carry no anchors to re-seat them at.
+    A region fills the matching keep slot the template ships, so re-scaffolding a template
+    that carries its own keep region does not append a second copy of it every run. Regions
+    the body has no slot for land at the end, because those templates carry no anchors to
+    re-seat them at.
     """
     regions = extract_keep_regions(existing)
     if not regions:
         return body
-    return body.rstrip("\n") + "\n\n" + "\n\n".join(regions) + "\n"
+    slots = extract_keep_regions(body)
+    if not slots:
+        return body.rstrip("\n") + "\n\n" + "\n\n".join(regions) + "\n"
+
+    out, rest = [], body
+    for slot, region in zip(slots, regions):
+        head, _, rest = rest.partition(slot)
+        out.append(head)
+        out.append(region)
+    out.append(rest)
+    carried = "".join(out)
+
+    spare = regions[len(slots):]
+    if spare:
+        carried = carried.rstrip("\n") + "\n\n" + "\n\n".join(spare) + "\n"
+    return carried
+
+
+def strip_model_pin(text: str) -> str:
+    """`text` with its frontmatter `model:` pin removed, every other byte left alone.
+
+    Route-by-level (ADR-0033): the pin is dropped as the persona lands, so no later
+    scaffold or den-refresh re-adds one the project removed — `level:` plus
+    .ai-badger/model-groups.json carries the routing. The entry's own lines are removed
+    and nothing else (the head is cut, never rebuilt from parsed fields, so fence quirks,
+    comments and blank lines survive); text with no `model:` entry (or without
+    frontmatter) is returned unchanged.
+    """
+    import frontmatter as fm  # pylint: disable=import-outside-toplevel
+
+    split = fm.split(text)
+    if not split.present:
+        return text
+    for entry in split.entries:
+        if entry.key == "model":
+            return split.head.replace("".join(entry.lines), "", 1) + split.body
+    return text
 
 
 def cfg_get(config: Dict[str, Any], dotted: str) -> Any:

@@ -45,8 +45,8 @@ Anthropic clarifies which article is current.
 
 - **Opus — planning and the quality gate.** Phase 2 decomposition and the Phase 4 correctness +
   architecture review. Also: adversarial review of another agent's claims, money or other
-  derivation-heavy math, non-obvious root-cause debugging, and arbitration when two work
-  packages disagree about a contract. Dispatch `model: "opus"` and prefix the call's
+  derivation-heavy math, non-obvious root-cause debugging, and arbitration when two steps
+  disagree about a contract. Dispatch `model: "opus"` and prefix the call's
   `description` with `"Opus: "` so the lane is visible in the agent panel.
 - **Sonnet — implementation, by default.** Everything that executes an already-decided spec:
   writing code, writing ADRs and docs where the decision is already recorded, mechanical
@@ -62,6 +62,21 @@ Anthropic clarifies which article is current.
   scarce for you. Either way: reserve it for a problem Opus has been tried on and failed, and
   say why when you dispatch `model: "fable"`.
 
+### Lane to model-tier defaults
+
+| Lane | Work | Model-tier default |
+|------|------|--------------------|
+| Planning | decomposition, plan review, quality gate | `high` |
+| Implementation | spec-driven code, docs, fix-ups | `medium` |
+| Mechanical | comment/doc touch-ups, rote refactors, probes | `low` |
+
+A `level` on the dispatch overrides the lane default.
+
+The `level` field is optional (`low`, `medium`, or `high`), resolved to that model tier's preferred registry entry.
+An explicit `model` always wins over `level`.
+With neither `level` nor `model`, the dispatch inherits the session (or parent) default model.
+The registry lives at `.ai-badger/model-groups.json`; it holds the IDs and prices, so this extension names neither.
+
 The orchestrating session must not assume it is already running the planning lane — the default
 model for new sessions changes. Get the reasoning by dispatching an explicit `Agent` call with
 the `model` override, not by doing the work in-session because the session "is" Opus today.
@@ -69,12 +84,12 @@ the `model` override, not by doing the work in-session because the session "is" 
 ## Reading a finished task's numbers
 
 Measurements behind the delegation policy, and the two artefacts that carry them. Read this when
-interpreting `token-usage.json`, not on every dispatch — the base skill's policy is the part you
+interpreting the `token_usage` store, not on every dispatch — the base skill's policy is the part you
 act on.
 
 ### Judge a task by its model mix, not its cache efficiency
 
-`token-usage.json` records both. `cacheEfficiency` (cache_read ÷ (cache_read + cache_creation))
+The `token_usage` store records both. `cacheEfficiency` (cache_read ÷ (cache_read + cache_creation))
 turns out not to discriminate: **measured over 1250 real sessions it sits at 0.975–0.986 on every
 one**, including the most expensive. It is worth watching only for a *collapse*, which means the
 prefix is churning.
@@ -122,3 +137,14 @@ dispatch's actual model is in doubt, grep the session's `.jsonl` for the `Agent`
 `description` matches and check its paired `tool_result`'s `toolUseResult.resolvedModel`. Do not
 re-investigate this as a dispatch-code problem unless the transcript itself shows the wrong
 `resolvedModel`.
+
+## Status-report enforcement (claude)
+
+- Session identity is `CLAUDE_CODE_SESSION_ID`, then pid ancestry, then unique cwd — and the
+  fuzzy half is consulted only when no env claim exists in this process. A cwd hosting several
+  sessions never resolves by itself: pass `--session-id` explicitly instead of letting the
+  tracker guess.
+- The Stop hook promotes STARTED to IN_PROGRESS and refreshes `latest`; without the hooks
+  installed, tasks stay STARTED — still open to status, but checkpoints go stale. Keep them.
+- After every Agent completion, record it before the next dispatch (`subagent --delegation`
+  is transcript-backed). Unrecorded lanes are invisible to status.

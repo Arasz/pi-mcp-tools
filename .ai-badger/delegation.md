@@ -1,6 +1,6 @@
 # Delegation map — pi-mcp-tools
 
-> Scaffolded by ai-badger 0.140.0. Regenerated on every scaffold; do not edit.
+> Scaffolded by ai-badger 0.184.1. Regenerated on every scaffold; do not edit.
 
 ## Stacks
 
@@ -8,12 +8,12 @@ github, node, ts
 
 ## Personas available here
 
-- `api-engineer` — API contract specialist. Lane: sonnet.
-- `architect` — Architecture and decomposition specialist. Lane: opus.
-- `code-reviewer` — Quality and security review gate. Lane: opus.
-- `delegator` — Work-routing lead for multi-package sessions. Lane: opus.
-- `qa` — Test-quality authority. Lane: opus.
-- `test-engineer` — Testing specialist. Lane: sonnet.
+- `api-engineer` — API contract specialist. Level: medium, Lane: sonnet.
+- `architect` — Architecture and decomposition specialist. Level: high, Lane: opus.
+- `code-reviewer` — Quality and security review gate. Level: high, Lane: opus.
+- `delegator` — Work-routing lead for multi-package sessions. Level: high, Lane: opus.
+- `qa` — Test-quality authority. Level: high, Lane: opus.
+- `test-engineer` — Testing specialist. Level: medium, Lane: sonnet.
 
 ## Routing (config.json personaRouting)
 
@@ -31,8 +31,26 @@ lanes are exempt. Worked cases live in `.ai-badger/skills/worktree-agent-isolati
 
 ## Reasoning-model dispatch
 
-When dispatching to a reasoning model (opus, o-series, Claude extended
-thinking, DeepSeek-R1), adjust the prompt:
+Each persona line above carries its routing intent (`Level: high|medium|low`)
+beside its Claude lane (`Lane: opus|sonnet|...`). Pick by the derivation the
+work needs, not its size:
+
+- **high** — the answer must be *derived*: decomposition, root cause with no
+  reproduction, arbitration, adversarial verification, a security judgment.
+- **medium** — the answer is *determined by a spec that already exists*: the
+  code the plan describes, the test whose expected value is given, an ADR.
+- **low** — a *transformation with no judgment*: changelog from a diff, rote
+  rename, "does file X contain Y". No catalog persona defaults here; name it
+  explicitly for mechanical work.
+
+A level resolves to a model pin through `.ai-badger/model-groups.json` (the
+PKG-1 registry). When an explicit model beats the level is stated in the task
+skill — PKG-2 owns that precedence and this map does not restate it. `level:`
+is gate/generator vocabulary only: it is stripped at `.claude/agents/`
+delivery, so a gate-declared level is never a runtime-routed one on Claude.
+
+When dispatching at **high** (opus, o-series, Claude extended thinking,
+DeepSeek-R1), adjust the prompt:
 
 - **State goals and success criteria only** — strip prescriptive step-by-step
   plans, CoT scaffolding, and few-shot examples. These constrain the model's
@@ -43,7 +61,7 @@ thinking, DeepSeek-R1), adjust the prompt:
 - **Use API parameters for depth control** — `reasoning_effort` (OpenAI) or
   `thinking_budget_tokens` (Anthropic) instead of prompt-side "think harder."
 
-For standard instruction-tuned models (sonnet, flash), the existing
+For **medium/low** instruction-tuned lanes (sonnet, flash), the existing
 prescriptive persona descriptions are appropriate.
 
 ## Verifiers
@@ -56,6 +74,6 @@ prescriptive persona descriptions are appropriate.
 
 - `ai-raccoon` — AiRaccoon is the project memory server
 - `code-review-graph` — This project has a knowledge graph
-- `hermes` — Read operations use Hermes's session store and work without a running gateway; sending messages needs the gateway and its platform adapters
 - `playwright` — The Playwright MCP server provides browser automation capabilities through the Model Context Protocol, enabling LLMs to interact with web pages using structured accessibility snapshots without requiring vision models
 - `semantica` — Semantica is the project knowledge graph
+- `task-graph` — task-graph owns the decomposed task plan — a DAG of steps carrying status, acceptance criteria and evidence, persisted beside the task tracker in the project's tracking.db

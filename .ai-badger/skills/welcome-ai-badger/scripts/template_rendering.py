@@ -6,6 +6,7 @@ template files, and assembles agent discovery documents.
 from __future__ import annotations
 
 import re
+import shutil
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
@@ -16,7 +17,18 @@ from scaffold_context import ScaffoldContext
 # The lane a persona that names no `model:` runs in — whatever model the session already uses.
 SESSION_DEFAULT_LANE = "session default"
 
+# Routing intents a persona may declare in `level:`. Case-sensitive lowercase.
+# Canonical owner is PKG-1's model_groups.VALID_LEVELS; this read-only copy exists
+# because the generator is stdlib-only and must render with no registry present.
+VALID_LEVELS = ("low", "medium", "high")
+
 DELEGATION_TEMPLATE = "delegation.md.tmpl"
+
+# The config keys the scaffolder renders verbatim as free-form prose, with the template slot
+# each fills. compute_doc_slots is the only writer. Every other slot is structured and
+# fingerprinted; this prose is the one thing a scaffold re-renders faithfully while it goes
+# stale, which is why drift.py surfaces exactly this list for staleness review.
+PROSE_SLOTS: Dict[str, str] = {"summary": "PROJECT_SUMMARY", "domain": "PROJECT_DOMAIN"}
 
 
 def frontmatter_fields(text: str) -> Dict[str, str]:
@@ -156,10 +168,8 @@ class TemplateRendering:
             "`personaRouting` in `.ai-badger/config.json` to route it._"
         )
         instr_md = "\n".join(instruction_row(p) for p in instr_paths) or "_None._"
-        return {
+        slots = {
             "PROJECT_NAME": project.get("name", ""),
-            "PROJECT_SUMMARY": project.get("summary", ""),
-            "PROJECT_DOMAIN": project.get("domain", ""),
             "STACKS": ", ".join(self.ctx.config.get("stacks", [])),
             "INVARIANTS": inv_md,
             "COMMANDS": cmd_md,
@@ -169,6 +179,9 @@ class TemplateRendering:
             "FRAMEWORK_VERSION": self.ctx.index["frameworkVersion"],
             "SOURCE_OF_TRUTH": source_of_truth,
         }
+        # The prose slots, from the list drift.py reviews against — one writer, one list.
+        slots.update({slot: project.get(key, "") for key, slot in PROSE_SLOTS.items()})
+        return slots
 
     def _render_template(self, tmpl_name: str, slots: Dict[str, str]) -> str:
         """Render a template file from features/common/templates/ with the given slots."""
@@ -196,10 +209,15 @@ class TemplateRendering:
     # -- the delegation map ---------------------------------------------------------
 
     def _persona_lines(self) -> str:
-        """One line per persona in `.ai-badger/agents/`: what it is for, and the lane it runs in.
+        """One line per persona in `.ai-badger/agents/`: intent, summary, and lane.
 
         Read from the scaffolded copies rather than the catalog, so a persona this project
-        added by hand is on the map too.
+        added by hand is on the map too. Dual-key (ADR-0027): a valid `level:` renders
+        as `Level: <level>` beside the existing `Lane: <model>`, unconditionally — every
+        line names intent, not just the ones a registry resolves. A missing `level:`
+        renders the legacy bare-lane shape (grandfather); an unknown one renders a loud
+        `UNKNOWN LEVEL` marker naming the bad value and the closed set, plus a scaffold
+        note — the run still renders (M5: loud marker + note, never a hard abort).
         """
         lines: List[str] = []
         for path in sorted((self.ctx.aib / "agents").glob("*.md"), key=lambda p: p.stem):
@@ -207,8 +225,20 @@ class TemplateRendering:
             name = fields.get("name") or path.stem
             summary = first_sentence(fields.get("description", ""))
             lane = fields.get("model") or SESSION_DEFAULT_LANE
-            lines.append(f"- `{name}`" + (f" — {summary}." if summary else " —")
-                         + f" Lane: {lane}.")
+            head = f"- `{name}`" + (f" — {summary}." if summary else " —")
+            raw_level = fields.get("level")
+            level = raw_level.strip() if isinstance(raw_level, str) else ""
+            if not level:
+                lines.append(head + f" Lane: {lane}.")
+                continue
+            if level not in VALID_LEVELS:
+                lines.append(head + f" Level: UNKNOWN LEVEL {level!r} "
+                             f"(valid: {', '.join(VALID_LEVELS)}). Lane: {lane}.")
+                self.ctx.notes.append(
+                    f"agents/{path.name} declares unknown level {level!r} "
+                    f"(valid: {', '.join(VALID_LEVELS)}) — rendered as a marker, not aborted")
+                continue
+            lines.append(head + f" Level: {level}, Lane: {lane}.")
         return "\n".join(lines) or "_None scaffolded._"
 
     def _mcp_server_lines(self, names: Sequence[str]) -> str:
@@ -266,17 +296,42 @@ class TemplateRendering:
             self.ctx.notes.append(f"carried preserved regions into {rel}")
         return carried
 
-    def copy_with_header(self, dest: Path, name: str, body: str) -> None:
-        """Write body to dest with managed header, preserving hand-authored files."""
+    def copy_with_header(self, dest: Path, name: str, body: str) -> bool:
+        """Write body to dest with managed header, preserving hand-authored files.
+
+        Returns whether this call actually wrote dest — False when an existing
+        hand-authored file was preserved instead, so a caller recording provenance
+        (L3-6) knows not to claim a target it left untouched as generated.
+        """
         if (not self.ctx.overwrite and dest.exists()
                 and not _is_managed(dest.read_text(encoding="utf-8", errors="ignore"))):
             self.ctx.notes.append(
                 f"preserved hand-authored {dest.relative_to(self.ctx.target).as_posix()} "
                 "(source written to .ai-badger/; pass --overwrite-agent-files to replace)"
             )
-            return
+            return False
         carried = self.carried_body(dest, body)
         if carried is None:
-            return
+            return False
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text(_with_managed_header(carried, name), encoding="utf-8")
+        return True
+
+    def copy_carrying_regions(self, src: Path, dest_dir: Path) -> Optional[Path]:
+        """Copy `src` into `dest_dir`, carrying whatever preserved regions `dest` already had.
+
+        Returns the written path, or None when dest's markers are malformed and it was left
+        untouched (the note says so). Nothing carried means a byte-for-byte copy, so the common
+        case keeps exactly the bytes the framework ships.
+        """
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / src.name
+        body = src.read_text(encoding="utf-8")
+        carried = self.carried_body(dest, body)
+        if carried is None:
+            return None
+        if carried == body:
+            shutil.copyfile(src, dest)
+        else:
+            dest.write_text(carried, encoding="utf-8")
+        return dest

@@ -12,6 +12,15 @@ lanes are exempt, derived from `disallowedTools` frontmatter rather than a perso
 
 Why parallelism-only, why the machine-wide session count was cut, and why gating needs
 positive proof that a lane writes: `docs/changelog/0.138.0-a-contract-with-no-gate-behind-it.md`.
+
+Lane vocabulary (ADR-0027, dual-key): personas carry `level:` (routing intent,
+low|medium|high) beside the Claude-legible `model:` bare lane. `level:` is gate-only
+vocabulary — `adjust_agents.CLAUDE_KEYS` does not carry it, so it is stripped at
+`.claude/agents/` delivery and a gate-declared level is never a runtime-routed one on
+Claude. The future `declares_level()` disjunct beside `declares_model()` is recorded,
+not wired: this change is DENY_REASON + docstring text only, zero logic change.
+Fail-open on unreadable files is preserved (S6); loud only for parseable ones.
+Resolution precedence is owned by PKG-2 and quoted in DENY_REASON, never restated here (M2).
 """
 from __future__ import annotations
 
@@ -23,6 +32,7 @@ from typing import Any, Dict, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+# pylint: disable=no-member  # debug_log is an exec-populated shim; pylint cannot see its members
 try:
     import debug_log  # pylint: disable=wrong-import-position
 except ImportError:  # pragma: no cover - a missing logger must never break a hook
@@ -37,6 +47,11 @@ MODEL_KEY = "model:"
 
 DISALLOWED_KEY = "disallowedTools:"
 
+# Claude's own frontmatter/param spelling for "use the session's model" — exactly what this
+# gate exists to deny, so a non-empty `model: inherit` must not count as a declared model
+# (L5-7). Compared case-insensitively: YAML scalars are not case-sensitive by convention here.
+INHERIT_MODEL = "inherit"
+
 # Mirrors the harness's file-touching tools. A hand-kept list with nothing to derive it from
 # and nothing to compare it against — a conscious exception to derive-or-delete-the-list.
 # Consumed with all(), so a MISSING entry widens the read-only exemption rather than
@@ -46,7 +61,10 @@ WRITE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
 DENY_REASON = (
     "Dispatch declares no model and subagent type '{subagent_type}' has no model lane. "
     "Pass model explicitly ('haiku' for mechanical work, 'sonnet' for spec-driven work, "
-    "'opus' for derivation) — see .ai-badger/delegation.md."
+    "'opus' for derivation) — see .ai-badger/delegation.md. "
+    "Levels low, medium, high name the routing intent beside each lane there: "
+    "\"An explicit model wins verbatim; else the persona's level resolves to its group's "
+    "preferred pin; else the session model is inherited.\""
 )
 
 ISOLATION_DENY_REASON = (
@@ -91,8 +109,14 @@ def lane_file(root: Optional[str], subagent_type: str) -> Optional[Path]:
     return None
 
 
+def _names_a_model(value: str) -> bool:
+    """Non-empty and not the `inherit` sentinel — the only shapes that actually pin a model."""
+    value = value.strip()
+    return bool(value) and value.lower() != INHERIT_MODEL
+
+
 def declares_model(path: Path) -> bool:
-    """True when the agent file's YAML frontmatter carries a non-empty top-level `model:` key."""
+    """True when the agent file's YAML frontmatter carries a real, non-inherit `model:` key."""
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError:  # pragma: no cover - an unreadable lane file declares nothing
@@ -103,7 +127,7 @@ def declares_model(path: Path) -> bool:
         if line.strip() == FRONTMATTER_FENCE:
             return False
         if line.startswith(MODEL_KEY):
-            return bool(line[len(MODEL_KEY):].strip())
+            return _names_a_model(line[len(MODEL_KEY):])
     return False
 
 
@@ -184,8 +208,8 @@ def decide(payload: Dict[str, Any]) -> int:
     root = project_root(payload)
     model = tool_input.get("model")
     lane = lane_file(root, subagent_type)
-    has_model = (isinstance(model, str) and model.strip()) or (
-        lane is not None and declares_model(lane))
+    explicit_model = isinstance(model, str) and _names_a_model(model)
+    has_model = explicit_model or (lane is not None and declares_model(lane))
     if not has_model:
         _debug("deny", project=root, subagentType=subagent_type, why="no_model")
         _deny(DENY_REASON.format(subagent_type=subagent_type))
@@ -198,7 +222,7 @@ def decide(payload: Dict[str, Any]) -> int:
         return 0
 
     _debug("allow", project=root, subagentType=subagent_type,
-           why="explicit_model" if (isinstance(model, str) and model.strip()) else "lane_file")
+           why="explicit_model" if explicit_model else "lane_file")
     return 0
 
 

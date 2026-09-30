@@ -148,7 +148,7 @@ if _SCRIPT_DIR not in sys.path:
 
 from _shared import (  # noqa: E402 — re-exported for backward compatibility
     _test_ignore, PROJECT_LOCAL_FILE, MANAGED_HEADER, _MANAGED_PREFIX,
-    cfg_get, requirement_met, _condition_met, _within,
+    cfg_get, requirement_met, _condition_met, _within, strip_model_pin,
 )
 
 # Read from each skill's own `scope:` frontmatter (ADR-0018), against the catalog
@@ -227,8 +227,13 @@ from mcp_tools import McpTools  # noqa: E402
 from statusline_wiring import StatusLineWiring  # noqa: E402
 # relink_hermes_skills is re-exported: den-refresh's refresh.py calls it on this module.
 from skill_delivery import SkillDelivery, prune_namespaces, relink_hermes_skills  # noqa: E402
+from skills_argv import resolve_requested_skills  # noqa: E402
 from superseded_prune import SupersededPrune  # noqa: E402
+from project_id import mint_project_id  # noqa: E402
 from local_invariants import append_rendered  # noqa: E402
+from model_registry import deliver as deliver_model_registry  # noqa: E402
+from gitignore_block import gitignore_managed_block, merge_gitignore, write_gitignore_block  # noqa
+from record_provenance import provenance_hashes  # noqa: E402
 
 
 def _ctx_property(name: str) -> property:
@@ -264,9 +269,12 @@ class Scaffolder:
         self.included = bl.inclusions(config)
         self.addable_skills = set(bl.opt_in_skills_in(root / "features" / "common" / "skills"))
         # Grouped skills install whole (#266), expanded before the addable filter; a stale
-        # member name resolves to the gateway that absorbed it (ADR-0021).
-        wanted = {aliases.get(n, n) for n in bl.expand_skill_groups(self.included["skills"])}
-        asked_for = [n for n in sorted(wanted) if n in self.addable_skills]
+        # member name resolves to the gateway that absorbed it (ADR-0021). The composition is
+        # the shared include-derived oracle (bl.include_derived_skill_names) so the guard's
+        # expected set cannot drift from what the Scaffolder actually asks for (D1) — only the
+        # include-derived block feeds delivery here: an explicit argv REPLACES the defaults
+        # and must never gain them back (API-F2).
+        asked_for = bl.include_derived_skill_names(config, aliases, self.addable_skills)
         offered = list(dict.fromkeys(list(skills) + asked_for))
         # Whether the delivered list is evidence of what the project wants: empty means
         # "unchanged" (#129), which discover_stack_local hides. See adjust_skills.may_prune.
@@ -309,8 +317,10 @@ class Scaffolder:
 
         An exclusion naming a catalog item the framework has since dropped goes inert rather
         than fatal — refresh refuses on an invalid config, so a fatal one would turn an
-        upstream deletion into a broken upgrade (research §4.2).
+        upstream deletion into a broken upgrade (research §4.2); groups (D9) are one note.
         """
+        group_notes, grouped = bl.exclusion_group_notes(self.config)
+        self.notes.extend(group_notes)
         for feature in bl.EXCLUDABLE_FEATURES:
             declined = self.excluded[feature]
             if not declined:
@@ -318,12 +328,12 @@ class Scaffolder:
             known = {i.get("name") for stack in self.stacks
                      for i in bl.feature_items(self.index, stack, feature)}
             singular = feature[:-1]
-            for name in sorted(declined - known):
+            covered = grouped if feature == "skills" else set()
+            for name in sorted(declined - known - covered):
                 self.notes.append(
                     f"exclusion '{name}' matches no catalog {singular} — safe to remove "
-                    f"from config.json"
-                )
-            for name in sorted(declined & known):
+                    f"from config.json")
+            for name in sorted((declined & known) - covered):
                 self.notes.append(f"declined {singular} '{name}' (config.exclude.{feature})")
         for name in sorted(self.excluded["skills"]):
             if (self.aib / "skills" / name).is_dir():
@@ -344,9 +354,8 @@ class Scaffolder:
                **extra: Any) -> None:
         """Append a manifest entry recording where a scaffolded item came from and went.
 
-        Feature types the registry marks `hashes_source` record the framework source's hash
-        rather than the written file's, because drift.compare re-hashes the source for file
-        entries and any other choice can never match (ADR-0006). `extra` is merged in verbatim.
+        Hash fields are `record_provenance.provenance_hashes` (#194 keeps them out of this
+        module's line budget). `extra` is merged in verbatim.
         """
         entry = {
             "feature": feature, "stack": stack, "name": name,
@@ -354,42 +363,21 @@ class Scaffolder:
             "target": target.relative_to(self.target).as_posix(),
             "frameworkVersion": self.index["frameworkVersion"],
         }
-        if source.is_dir():
-            # Directory entry (skills): two hashes, two questions (#110). `hash` covers the
-            # TARGET dir and answers "did this project edit its copy?"; `sourceHash` covers the
-            # framework SOURCE and is the only one that can answer "has the framework moved
-            # ahead?", because the target is rendered output the source is not comparable to.
-            # Both exclude extensions/ (config-gated per project, with entries of their own);
-            # `hash` also drops `projectOwned`, which the project edits and this run preserved.
-            fingerprint = bl.dir_content_hash(
-                target, exclude=bl.SKILL_EXCLUDE_PATTERNS + ["extensions"],
-                exclude_rel=extra.get("projectOwned"))
-            entry["hash"] = fingerprint["content_hash"]
-            entry["dirMeta"] = {
-                "file_count": fingerprint["file_count"],
-                "dir_count": fingerprint["dir_count"],
-            }
-            source_print = bl.dir_content_hash(
-                source, exclude=bl.SKILL_EXCLUDE_PATTERNS + ["extensions"]
-            )
-            entry["sourceHash"] = source_print["content_hash"]
-            entry["sourceMeta"] = {
-                "file_count": source_print["file_count"],
-                "dir_count": source_print["dir_count"],
-            }
-        else:
-            hash_from = source if bl.feature_type(feature).hashes_source else target
-            entry["hash"] = bl.sha256_file(hash_from)
+        entry.update(provenance_hashes(bl, feature, source, target, extra))
         self.entries.append({**entry, **extra})
 
     def copy_file(self, feature: str, stack: str, item: Dict[str, Any], dest_dir: Path) -> Path:
-        """Copy one index item's source file into dest_dir and record its provenance."""
+        """Copy one index item's source file into dest_dir and record its provenance.
+
+        The copy carries any preserved regions the file already had, the same survival path the
+        managed agent files get (see TemplateRendering.copy_carrying_regions). A file left
+        untouched because its markers are malformed is not recorded.
+        """
         src = self.root / item["path"]
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        dest = dest_dir / src.name
-        shutil.copyfile(src, dest)
-        self.record(feature, stack, item["name"], src, dest)
-        return dest
+        dest = self.rendering.copy_carrying_regions(src, dest_dir)
+        if dest is not None:
+            self.record(feature, stack, item["name"], src, dest)
+        return dest if dest is not None else dest_dir / src.name
 
     def record_template(self, src: Path, dest: Path, seed_once: bool = False) -> None:
         """Record a template's provenance; `seed_once` marks one the scaffold never rewrites."""
@@ -415,26 +403,46 @@ class Scaffolder:
     # -- seed-once (framework writes once, project owns thereafter; see #15) --------
     def _seed_once_copy(self, src: Path, dest: Path, label: str) -> None:
         """Copy src to dest only on first scaffold. If dest already exists, it is project-owned
-        and left untouched (--reset-seed-files overrides this and reseeds from src)."""
-        if src.exists():
-            self.record_template(src, dest, seed_once=True)
+        and left untouched (--reset-seed-files overrides this and reseeds from src).
+
+        Recorded only once dest is settled — copied just now, or already there — so `record`
+        (`outputHash`, D11) always sees a real file and never depends on which run this is.
+        """
+        if not src.exists():
+            return
         if dest.exists() and not self.reset_seed_files:
             self.notes.append(f"preserved seed-once {label} (already exists; not re-seeded; "
                               "pass --reset-seed-files to reset)")
-            return
-        if src.exists():
+        else:
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(src, dest)
+        self.record_template(src, dest, seed_once=True)
 
     # -- features -------------------------------------------------------------------
     def scaffold_personas(self) -> None:
         """Copy every applicable stack's persona files into .ai-badger/agents/.
 
         Reads `bl.applicable_feature_items` — the same rule the Copilot agent delivery
-        applies — so the two hosts deliver the same persona set (#210).
+        applies — so the two hosts deliver the same persona set (#210). `personaModelPins:
+        false` (ADR-0033) strips each `model:` pin as the persona lands, so no scaffold or
+        den-refresh re-adds one the project dropped: routing runs on `level:`, with tier
+        taste in .ai-badger/model-groups.json alone.
         """
+        pins = self.config.get("personaModelPins", True)
         for stack, item in bl.applicable_feature_items(self.index, self.config, "personas"):
-            self.copy_file("personas", stack, item, self.aib / "agents")
+            if pins:
+                self.copy_file("personas", stack, item, self.aib / "agents")
+            else:
+                self._copy_persona_level_only(stack, item)
+
+    def _copy_persona_level_only(self, stack: str, item: Dict[str, Any]) -> Path:
+        """Copy one persona into .ai-badger/agents/ with its `model:` pin stripped (ADR-0033)."""
+        src = self.root / item["path"]
+        dest = self.aib / "agents" / src.name
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(strip_model_pin(src.read_text(encoding="utf-8")), encoding="utf-8")
+        self.record("personas", stack, item["name"], src, dest)
+        return dest
 
     def scaffold_instructions(self) -> List[Path]:
         """Copy every applicable stack's instruction files into .ai-badger/instructions/."""
@@ -701,6 +709,7 @@ class Scaffolder:
     def run(self, generated_at: Optional[str] = None) -> Dict[str, Any]:
         """Run every scaffold step in order and return the manifest, plugin commands, and notes."""
         self.aib.mkdir(parents=True, exist_ok=True)
+        mint_project_id(self.aib)
         self._completed_steps = []
         self._record_progress("start")
         self.superseded.prune(self._prior_manifest().get("entries", []))
@@ -715,6 +724,8 @@ class Scaffolder:
             self._outside_project("hermes skill symlinks", self.symlink_hermes_skills)
         self.scaffold_agent_instructions()
         self.scaffold_templates()
+        write_gitignore_block(self.ctx)
+        deliver_model_registry(self.ctx)
         self.mcp.fill_mcp_described()
         self.rendering.write_delegation_map(invariants, instr_paths,
                                             self.mcp.project_server_names())
@@ -736,6 +747,7 @@ class Scaffolder:
             self.mcp.declared_servers())
         self.mcp.propose_claude_mcp_user(user_servers)
         self.mcp.generate_copilot_mcp_json(project_servers)
+        self.mcp.generate_pi_mcp_json()
         self.copy_engine_and_schemas()
 
         manifest = {
@@ -803,22 +815,10 @@ def main(argv=None) -> int:
         return 1
 
     config = bl.load_json(config_path)
-    skills = [s for s in args.skills.split(",") if s]
-    cli_notes: List[str] = []
-    if not skills:
-        # An explicitly empty --skills means "unchanged", not "none" (#129). A fresh target
-        # has no manifest to recover from and scaffolds no skills — nothing to destroy.
-        manifest_path = target / ".ai-badger" / "manifest.json"
-        if manifest_path.is_file():
-            try:
-                skills = bl.scaffolded_skill_names(bl.load_json(manifest_path))
-                cli_notes.append(
-                    f"--skills was empty — reused {len(skills)} skill(s) already scaffolded, "
-                    f"from the manifest at {manifest_path}"
-                )
-            except (ValueError, OSError) as exc:
-                skills = []
-                cli_notes.append(f"--skills empty, manifest at {manifest_path} could not be read ({exc})")
+    skills, cli_notes, rejection = resolve_requested_skills(root, target, args.skills)
+    if rejection:
+        print(rejection, end="")
+        return 2
     scaf = Scaffolder(root, target, config, skills, install=not args.no_install,
                       overwrite=args.overwrite_agent_files,
                       reset_seed_files=args.reset_seed_files,
