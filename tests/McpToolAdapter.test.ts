@@ -36,7 +36,16 @@ describe("McpToolAdapter", () => {
     it("uses default mcp_<server> prefix when no toolPrefix", () => {
       const tool: McpTool = { name: "my_tool", description: "test", inputSchema: {} };
       const result = McpToolAdapter.convertToPiTool(tool, serverName, () => createMockClient());
-      expect(result!.name).toBe("mcp_test-server_my_tool");
+      expect(result!.name).toBe("mcp_test_server_my_tool");
+    });
+
+    it("normalizes dashes to underscores so the pi name is identifier-safe", () => {
+      const tool: McpTool = { name: "plan_get", description: "test", inputSchema: {} };
+      const result = McpToolAdapter.convertToPiTool(tool, "task-graph", () => createMockClient());
+      expect(result!.name).toBe("mcp_task_graph_plan_get");
+      const dashedTool: McpTool = { name: "list-projects", description: "test", inputSchema: {} };
+      const fromToolName = McpToolAdapter.convertToPiTool(dashedTool, "srv", () => createMockClient());
+      expect(fromToolName!.name).toBe("mcp_srv_list_projects");
     });
 
     it("sets description to tool description when present", () => {
